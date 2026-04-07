@@ -85,7 +85,7 @@ services:
   # Main Website (Next.js SSR example)
   # ===========================================
   # This container is built from source deployed via CI/CD.
-  # See github-actions/deploy-nextjs-app.yml for the workflow.
+  # See github-actions/ for CI/CD workflow examples.
   app:
     build:
       context: ./sites/blog

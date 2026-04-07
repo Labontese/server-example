@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-# Deploy / Update the server stack
+# Start / Update the server stack
 # ============================================================
 set -euo pipefail
 
@@ -18,7 +18,7 @@ fi
 # Source env for validation
 source .env
 
-echo "=== Deploying stack ==="
+echo "=== Starting stack ==="
 
 # Pull latest images
 docker compose pull
@@ -33,5 +33,5 @@ docker compose up -d --remove-orphans
 docker image prune -f
 
 echo ""
-echo "=== Deployment complete ==="
+echo "=== Stack is running ==="
 docker compose ps

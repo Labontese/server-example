@@ -1,5 +1,5 @@
-# Place this file at .github/workflows/deploy.yml in your Next.js repo
-name: Deploy to Hetzner
+# Place this file at .github/workflows/ci.yml in your Next.js repo
+name: Build and Ship
 
 on:
   push:
@@ -8,10 +8,10 @@ on:
 
 env:
   NODE_VERSION: "22"
-  DEPLOY_PATH: /home/deploy/server/sites/blog
+  REMOTE_PATH: /home/appuser/server/sites/blog
 
 jobs:
-  build-and-deploy:
+  build-and-ship:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,29 +24,29 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Prepare deploy directory
+      - name: Prepare artifacts
         run: |
-          mkdir -p deploy
+          mkdir -p artifacts
           # Copy everything needed to build the Docker image on the server
-          cp Dockerfile package.json package-lock.json next.config.mjs tsconfig.json deploy/
-          cp -r app components lib public styles deploy/
+          cp Dockerfile package.json package-lock.json next.config.mjs tsconfig.json artifacts/
+          cp -r app components lib public styles artifacts/
 
-      - name: Deploy source via SSH
+      - name: Ship to server
         uses: easingthemes/ssh-deploy@v5.1.1
         with:
-          SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          REMOTE_HOST: ${{ secrets.DEPLOY_HOST }}
-          REMOTE_USER: deploy
-          SOURCE: "deploy/"
-          TARGET: ${{ env.DEPLOY_PATH }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          REMOTE_HOST: ${{ secrets.SERVER_HOST }}
+          REMOTE_USER: appuser
+          SOURCE: "artifacts/"
+          TARGET: ${{ env.REMOTE_PATH }}
           ARGS: "-rlgoDzvc --delete"
 
       - name: Rebuild and restart container
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: deploy
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          host: ${{ secrets.SERVER_HOST }}
+          username: appuser
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd ~/server
             docker compose up -d --build --force-recreate app

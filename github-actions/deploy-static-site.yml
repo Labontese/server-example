@@ -1,5 +1,5 @@
-# Place this file at .github/workflows/deploy.yml in your static site repo
-name: Deploy Static Site to Hetzner
+# Place this file at .github/workflows/ci.yml in your static site repo
+name: Build and Ship Static Site
 
 on:
   push:
@@ -8,10 +8,10 @@ on:
 
 env:
   NODE_VERSION: "20"
-  DEPLOY_PATH: /home/deploy/server/sites/static-site/html
+  REMOTE_PATH: /home/appuser/server/sites/static-site/html
 
 jobs:
-  build-and-deploy:
+  build-and-ship:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,20 +27,20 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Deploy via SSH
+      - name: Ship to server
         uses: easingthemes/ssh-deploy@v5
         with:
-          SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          REMOTE_HOST: ${{ secrets.DEPLOY_HOST }}
-          REMOTE_USER: deploy
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          REMOTE_HOST: ${{ secrets.SERVER_HOST }}
+          REMOTE_USER: appuser
           SOURCE: dist/
-          TARGET: ${{ env.DEPLOY_PATH }}
+          TARGET: ${{ env.REMOTE_PATH }}
           ARGS: "-rlgoDzvc --delete"
 
       - name: Reload Nginx container
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: deploy
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          host: ${{ secrets.SERVER_HOST }}
+          username: appuser
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: docker exec static-site nginx -s reload

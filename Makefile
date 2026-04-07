@@ -1,10 +1,7 @@
-.PHONY: help deploy up down restart logs ps backup backup-setup authelia-setup authelia-password bootstrap
+.PHONY: help up down restart logs ps backup backup-setup authelia-setup authelia-password bootstrap
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
-
-deploy: ## Deploy or update the full stack
-	bash scripts/deploy.sh
 
 up: ## Start all services
 	docker compose up -d
@@ -21,10 +18,10 @@ logs: ## Tail logs for all services
 ps: ## Show running services
 	docker compose ps
 
-backup: ## Run backup (local + offsite to Storage Box)
+backup: ## Run backup (local + offsite)
 	bash scripts/backup.sh
 
-backup-setup: ## Setup Hetzner Storage Box SSH key + daily cron
+backup-setup: ## Setup offsite storage SSH key + daily cron
 	@echo ">>> Installing daily backup cron (3:00 AM)..."
 	@(crontab -l 2>/dev/null | grep -v "scripts/backup.sh"; echo "0 3 * * * cd $(shell pwd) && bash scripts/backup.sh >> backups/cron.log 2>&1") | crontab -
 	@echo ">>> Cron installed. Check with: crontab -l"

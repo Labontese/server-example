@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # ============================================================
-# Hetzner Dedicated Server Post-Install Script
+# Dedicated Server Post-Install Script
 # Target OS: Ubuntu 24.04 LTS (Noble Numbat)
 # Run as root on a fresh installation
 #
 # What this script does:
 #   1. System update + essential packages
 #   2. Timezone + locale
-#   3. Creates non-root deploy user with SSH keys
+#   3. Creates non-root service user with SSH keys
 #   4. SSH hardening (no root, no password, key-only)
 #   5. Firewall (UFW) - only 22, 80, 443
 #   6. Fail2ban for brute-force protection
@@ -21,6 +21,9 @@
 # ============================================================
 set -euo pipefail
 
+# --- Configuration ---
+SERVICE_USER="appuser"   # Change this to your preferred username
+
 # --- Preflight checks ---
 if [ "$(id -u)" -ne 0 ]; then
   echo "ERROR: This script must be run as root."
@@ -32,7 +35,7 @@ if ! grep -q "Ubuntu" /etc/os-release 2>/dev/null; then
 fi
 
 echo "============================================"
-echo "  Hetzner Server Bootstrap - Ubuntu 24.04"
+echo "  Server Bootstrap - Ubuntu 24.04"
 echo "============================================"
 echo ""
 
@@ -74,24 +77,24 @@ update-locale LANG=en_US.UTF-8
 echo ">>> Timezone and locale configured"
 
 # ============================================================
-# 3. CREATE DEPLOY USER
+# 3. CREATE SERVICE USER
 # ============================================================
-echo ">>> [3/13] Creating deploy user..."
+echo ">>> [3/13] Creating service user..."
 
-if ! id "deploy" &>/dev/null; then
-  useradd -m -s /bin/bash -G sudo deploy
-  echo "deploy ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/deploy
-  chmod 440 /etc/sudoers.d/deploy
+if ! id "$SERVICE_USER" &>/dev/null; then
+  useradd -m -s /bin/bash -G sudo "$SERVICE_USER"
+  echo "$SERVICE_USER ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/$SERVICE_USER"
+  chmod 440 "/etc/sudoers.d/$SERVICE_USER"
 
-  mkdir -p /home/deploy/.ssh
-  # Copy root's authorized_keys so you can SSH in as deploy
-  cp /root/.ssh/authorized_keys /home/deploy/.ssh/authorized_keys 2>/dev/null || true
-  chown -R deploy:deploy /home/deploy/.ssh
-  chmod 700 /home/deploy/.ssh
-  chmod 600 /home/deploy/.ssh/authorized_keys 2>/dev/null || true
-  echo ">>> Created deploy user (with your SSH key)"
+  mkdir -p "/home/$SERVICE_USER/.ssh"
+  # Copy root's authorized_keys so you can SSH in as the service user
+  cp /root/.ssh/authorized_keys "/home/$SERVICE_USER/.ssh/authorized_keys" 2>/dev/null || true
+  chown -R "$SERVICE_USER:$SERVICE_USER" "/home/$SERVICE_USER/.ssh"
+  chmod 700 "/home/$SERVICE_USER/.ssh"
+  chmod 600 "/home/$SERVICE_USER/.ssh/authorized_keys" 2>/dev/null || true
+  echo ">>> Created $SERVICE_USER user (with your SSH key)"
 else
-  echo ">>> Deploy user already exists, skipping"
+  echo ">>> $SERVICE_USER user already exists, skipping"
 fi
 
 # ============================================================
@@ -101,7 +104,7 @@ echo ">>> [4/13] Hardening SSH..."
 
 cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup.$(date +%s)
 
-cat > /etc/ssh/sshd_config.d/99-hardened.conf <<'SSHD'
+cat > /etc/ssh/sshd_config.d/99-hardened.conf <<SSHD
 # --- Authentication ---
 PermitRootLogin no
 PasswordAuthentication no
@@ -132,12 +135,12 @@ IgnoreRhosts yes
 UseDNS no
 DebianBanner no
 
-# --- Restrict to deploy user ---
-AllowUsers deploy
+# --- Restrict to service user ---
+AllowUsers $SERVICE_USER
 SSHD
 
 sshd -t && systemctl restart ssh
-echo ">>> SSH hardened (root disabled, key-only, deploy user only)"
+echo ">>> SSH hardened (root disabled, key-only, $SERVICE_USER user only)"
 
 # ============================================================
 # 5. FIREWALL (UFW)
@@ -260,7 +263,7 @@ echo \
 apt-get update
 apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-usermod -aG docker deploy
+usermod -aG docker "$SERVICE_USER"
 echo ">>> Docker CE + Compose plugin installed"
 
 # ============================================================
@@ -377,12 +380,12 @@ if command -v snap &>/dev/null; then
   echo ">>> Removed snapd"
 fi
 
-# Set file limits for deploy user
-cat > /etc/security/limits.d/deploy.conf <<'LIMITS'
-deploy soft nofile 65535
-deploy hard nofile 65535
-deploy soft nproc  65535
-deploy hard nproc  65535
+# Set file limits for service user
+cat > "/etc/security/limits.d/$SERVICE_USER.conf" <<LIMITS
+$SERVICE_USER soft nofile 65535
+$SERVICE_USER hard nofile 65535
+$SERVICE_USER soft nproc  65535
+$SERVICE_USER hard nproc  65535
 LIMITS
 
 # Login banner
@@ -404,7 +407,7 @@ echo "============================================"
 echo ""
 echo "  What was configured:"
 echo "    - System updated, essential tools installed"
-echo "    - Deploy user created (with your SSH key)"
+echo "    - $SERVICE_USER user created (with your SSH key)"
 echo "    - SSH: root disabled, password disabled, key-only"
 echo "    - Firewall: only ports 22, 80, 443"
 echo "    - Fail2ban: 3 attempts = 1 hour ban"
@@ -416,11 +419,11 @@ echo "    - 2GB emergency swap"
 echo "    - Snapd removed, core dumps disabled"
 echo ""
 echo "  Next steps:"
-echo "    1. Log in as deploy user:  ssh deploy@$(hostname -I | awk '{print $1}')"
-echo "    2. Clone repo:             git clone <repo> ~/server && cd ~/server"
-echo "    3. Configure:              cp .env.example .env && nano .env"
-echo "    4. Deploy:                 make deploy"
+echo "    1. Log in as $SERVICE_USER:  ssh $SERVICE_USER@$(hostname -I | awk '{print $1}')"
+echo "    2. Clone repo:               git clone <repo> ~/server && cd ~/server"
+echo "    3. Configure:                cp .env.example .env && nano .env"
+echo "    4. Start:                    make up"
 echo ""
 echo "  WARNING: Root SSH is now disabled."
-echo "  Make sure you can SSH as deploy before closing this session!"
+echo "  Make sure you can SSH as $SERVICE_USER before closing this session!"
 echo "============================================"

@@ -1,6 +1,6 @@
-# Hetzner Dedicated Server - Docker Compose Setup
+# Dedicated Server - Docker Compose Setup
 
-A production-ready, single-server Docker Compose setup for hosting multiple websites and services on a Hetzner dedicated server (tested on EX44: Intel i5-13500, 64GB RAM, 2x512GB NVMe).
+A production-ready, single-server Docker Compose setup for hosting multiple websites and services on a dedicated server (tested on Intel i5-13500, 64GB RAM, 2x512GB NVMe).
 
 ## What's Included
 
@@ -79,14 +79,14 @@ Three Docker networks ensure containers only communicate with what they need:
 ssh root@your-server-ip
 
 # Download and run the bootstrap script
-curl -O https://raw.githubusercontent.com/youruser/hetzner-docker-example/main/scripts/bootstrap.sh
+curl -O https://raw.githubusercontent.com/youruser/server-example/main/scripts/bootstrap.sh
 chmod +x bootstrap.sh
 ./bootstrap.sh
 ```
 
 The bootstrap script configures:
 - System packages, timezone, locale
-- Non-root `deploy` user with sudo
+- Non-root `appuser` service account with sudo
 - SSH hardening (key-only, no root login)
 - UFW firewall (ports 22, 80, 443 only)
 - Fail2ban (3 attempts = 1 hour ban)
@@ -98,11 +98,11 @@ The bootstrap script configures:
 ### 2. Clone and Configure
 
 ```bash
-# SSH as deploy user
-ssh deploy@your-server-ip
+# SSH as appuser
+ssh appuser@your-server-ip
 
 # Clone the repo
-git clone https://github.com/youruser/hetzner-docker-example.git ~/server
+git clone https://github.com/youruser/server-example.git ~/server
 cd ~/server
 
 # Create your .env
@@ -125,13 +125,17 @@ make authelia-password  # Creates password hash for users.yml
 
 Edit `authelia/config/users.yml` with your user and the generated hash.
 
-### 4. Deploy
+### 4. Start the Stack
 
 ```bash
-make deploy
+make up
 ```
 
-This pulls images, builds custom containers, and starts everything.
+Or for a full pull + build + start:
+
+```bash
+bash scripts/start.sh
+```
 
 ### 5. Verify
 
@@ -146,7 +150,7 @@ make logs        # Tail all logs
 .
 ├── docker-compose.yml            # All services defined here
 ├── .env.example                  # Template for environment variables
-├── Makefile                      # Common operations (deploy, backup, logs...)
+├── Makefile                      # Common operations (start, backup, logs...)
 │
 ├── traefik/
 │   ├── traefik.yml               # Traefik static config
@@ -168,7 +172,7 @@ make logs        # Tail all logs
 │       └── provisioning/         # Auto-provisioned datasources
 │
 ├── sites/
-│   ├── blog/                     # Next.js app (source deployed via CI/CD)
+│   ├── blog/                     # Next.js app (source via CI/CD)
 │   ├── static-site/
 │   │   └── nginx.conf            # Static site Nginx config
 │   ├── wordpress-1/
@@ -181,14 +185,14 @@ make logs        # Tail all logs
 │
 ├── scripts/
 │   ├── bootstrap.sh              # Server initial setup
-│   ├── deploy.sh                 # Stack deployment
+│   ├── start.sh                  # Stack start/update
 │   ├── backup.sh                 # DB dumps + offsite sync
 │   ├── init-wordpress-dbs.sh     # MariaDB init (multi-DB)
 │   └── init-postgres-dbs.sh      # PostgreSQL init (multi-DB)
 │
 ├── github-actions/
-│   ├── deploy-nextjs-app.yml     # CI/CD: Next.js app
-│   └── deploy-static-site.yml   # CI/CD: static site
+│   ├── ci-nextjs-app.yml         # CI/CD: Next.js app
+│   └── ci-static-site.yml        # CI/CD: static site
 │
 └── ntfy/
     └── server.yml                # Push notification config
@@ -229,12 +233,12 @@ Alloy replaces the need for separate node_exporter, cAdvisor, and Promtail conta
 
 ### Backup Strategy
 
-`scripts/backup.sh` dumps all databases and key data, then syncs to a Hetzner Storage Box via rsync/SSH:
+`scripts/backup.sh` dumps all databases and key data, then syncs to an offsite storage box via rsync/SSH:
 - Local backups: kept 7 days
 - Remote backups: kept 30 days
 - Runs daily at 3:00 AM via cron (`make backup-setup`)
 
-### CI/CD Deployment
+### CI/CD
 
 GitHub Actions workflows in `github-actions/` show the pattern:
 1. Build in CI
@@ -260,7 +264,7 @@ GitHub Actions workflows in `github-actions/` show the pattern:
 
 ## Server Specs
 
-Tested on **Hetzner EX44**:
+Tested on a dedicated server with:
 - CPU: Intel Core i5-13500 (6P+8E cores, 20 threads)
 - RAM: 64 GB DDR4 ECC
 - Storage: 2x 512 GB NVMe SSD

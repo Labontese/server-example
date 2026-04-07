@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================
 # Backup script - DB dumps, site content, Traefik certs
-# Creates local backup, then syncs to Hetzner Storage Box
+# Creates local backup, then syncs to offsite storage
 # ============================================================
 set -euo pipefail
 
@@ -53,13 +53,13 @@ docker cp authelia:/config/db.sqlite3 "$BACKUP_DIR/authelia.db" 2>/dev/null || e
 echo "=== Local backup complete: $BACKUP_DIR ==="
 
 # ============================================================
-# Sync to Hetzner Storage Box (offsite backup)
+# Sync to offsite storage (Storage Box or similar)
 # ============================================================
 if [[ -n "${STORAGEBOX_USER:-}" && -n "${STORAGEBOX_HOST:-}" ]]; then
     STORAGEBOX_PORT="${STORAGEBOX_PORT:-23}"
     STORAGEBOX_PATH="${STORAGEBOX_PATH:-./backups}"
 
-    echo "=== Syncing to Hetzner Storage Box ==="
+    echo "=== Syncing to offsite storage ==="
 
     ssh -p "$STORAGEBOX_PORT" "${STORAGEBOX_USER}@${STORAGEBOX_HOST}" "mkdir -p ${STORAGEBOX_PATH}/${TIMESTAMP}"
 
@@ -80,6 +80,6 @@ else
     echo ">>> Skipping offsite backup (STORAGEBOX_USER/STORAGEBOX_HOST not set in .env)"
 fi
 
-# Cleanup old local backups (keep last 7 days locally, 30 days on storage box)
+# Cleanup old local backups (keep last 7 days locally, 30 days offsite)
 find "${PROJECT_DIR}/backups" -maxdepth 1 -type d -name "20*" -mtime +7 -exec rm -rf {} \;
 echo ">>> Old local backups cleaned up (keeping 7 days locally)"
