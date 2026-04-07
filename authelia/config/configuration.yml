@@ -1,0 +1,80 @@
+---
+# Authelia configuration
+# Docs: https://www.authelia.com/configuration/prologue/introduction/
+
+server:
+  address: 'tcp4://:9091'
+
+log:
+  level: info
+
+totp:
+  disable: false
+  issuer: 'example.com'       # Change to your domain
+  period: 30
+  skew: 1
+
+identity_validation:
+  elevated_session:
+    require_second_factor: true
+  reset_password:
+    jwt_secret: {{ secret "/secrets/jwt_secret" | mindent 0 "|" | msquote }}
+
+authentication_backend:
+  file:
+    path: '/config/users.yml'
+    password:
+      algorithm: 'argon2'
+      argon2:
+        variant: 'argon2id'
+        iterations: 3
+        memory: 65536
+        parallelism: 4
+        key_length: 32
+        salt_length: 16
+
+access_control:
+  default_policy: 'deny'
+  rules:
+    # Traefik dashboard - require 2FA
+    - domain: 'traefik.example.com'
+      policy: 'two_factor'
+    # Grafana - require 2FA
+    - domain: 'stats.example.com'
+      policy: 'two_factor'
+    # Database admin - require 2FA
+    - domain: 'db.example.com'
+      policy: 'two_factor'
+    # n8n workflow automation - require 2FA
+    - domain: 'auto.example.com'
+      policy: 'two_factor'
+    # Homepage dashboard - require 2FA
+    - domain: 'home.example.com'
+      policy: 'two_factor'
+
+session:
+  secret: {{ secret "/secrets/session_secret" | mindent 0 "|" | msquote }}
+  cookies:
+    - domain: 'example.com'                    # Change to your domain
+      authelia_url: 'https://auth.example.com'  # Change to your domain
+
+regulation:
+  max_retries: 3
+  find_time: 120
+  ban_time: 300
+
+storage:
+  encryption_key: {{ secret "/secrets/storage_encryption_key" | mindent 0 "|" | msquote }}
+  local:
+    path: '/config/db.sqlite3'
+
+notifier:
+  filesystem:
+    filename: '/config/notification.txt'
+  # For production, use SMTP instead:
+  # smtp:
+  #   host: 'smtp.example.com'
+  #   port: 587
+  #   username: 'your-email@example.com'
+  #   password: 'your-password'
+  #   sender: 'auth@example.com'

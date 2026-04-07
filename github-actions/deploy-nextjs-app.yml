@@ -1,0 +1,52 @@
+# Place this file at .github/workflows/deploy.yml in your Next.js repo
+name: Deploy to Hetzner
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: "22"
+  DEPLOY_PATH: /home/deploy/server/sites/blog
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prepare deploy directory
+        run: |
+          mkdir -p deploy
+          # Copy everything needed to build the Docker image on the server
+          cp Dockerfile package.json package-lock.json next.config.mjs tsconfig.json deploy/
+          cp -r app components lib public styles deploy/
+
+      - name: Deploy source via SSH
+        uses: easingthemes/ssh-deploy@v5.1.1
+        with:
+          SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          REMOTE_HOST: ${{ secrets.DEPLOY_HOST }}
+          REMOTE_USER: deploy
+          SOURCE: "deploy/"
+          TARGET: ${{ env.DEPLOY_PATH }}
+          ARGS: "-rlgoDzvc --delete"
+
+      - name: Rebuild and restart container
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: deploy
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            cd ~/server
+            docker compose up -d --build --force-recreate app

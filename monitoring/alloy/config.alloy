@@ -1,0 +1,101 @@
+// ============================================================
+// Grafana Alloy Configuration
+// Collects: host metrics, Docker container metrics, Docker logs,
+//           MariaDB metrics, PostgreSQL metrics
+// ============================================================
+
+// ---- Host Metrics (node_exporter built-in) ----
+prometheus.exporter.unix "host" {
+  procfs_path    = "/host/proc"
+  sysfs_path     = "/host/sys"
+  rootfs_path    = "/host/root"
+  filesystem {
+    mount_points_exclude = "^/(sys|proc|dev|host|etc)($$|/)"
+  }
+}
+
+prometheus.scrape "host_metrics" {
+  targets    = prometheus.exporter.unix.host.targets
+  forward_to = [prometheus.remote_write.local.receiver]
+  scrape_interval = "15s"
+}
+
+// ---- Docker Container Metrics (cAdvisor-style) ----
+prometheus.exporter.cadvisor "containers" {
+  docker_host = "unix:///var/run/docker.sock"
+  storage_duration = "5m"
+  docker_only = true
+}
+
+prometheus.scrape "container_metrics" {
+  targets    = prometheus.exporter.cadvisor.containers.targets
+  forward_to = [prometheus.remote_write.local.receiver]
+  scrape_interval = "15s"
+}
+
+// ---- MariaDB Metrics ----
+prometheus.exporter.mysql "mariadb" {
+  data_source_name = env("MARIADB_MONITORING_DSN")
+}
+
+prometheus.scrape "mariadb_metrics" {
+  targets    = prometheus.exporter.mysql.mariadb.targets
+  forward_to = [prometheus.remote_write.local.receiver]
+  scrape_interval = "30s"
+}
+
+// ---- PostgreSQL Metrics ----
+prometheus.exporter.postgres "postgres" {
+  data_source_names = [env("POSTGRES_MONITORING_DSN")]
+}
+
+prometheus.scrape "postgres_metrics" {
+  targets    = prometheus.exporter.postgres.postgres.targets
+  forward_to = [prometheus.remote_write.local.receiver]
+  scrape_interval = "30s"
+}
+
+// ---- Send metrics to local Prometheus ----
+prometheus.remote_write "local" {
+  endpoint {
+    url = "http://prometheus:9090/api/v1/write"
+  }
+}
+
+// ---- Docker Log Collection ----
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "docker_logs" {
+  targets = discovery.docker.containers.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    target_label  = "container"
+    regex         = "/(.*)"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_log_stream"]
+    target_label  = "stream"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_network_name"]
+    target_label  = "network"
+  }
+}
+
+loki.source.docker "containers" {
+  host    = "unix:///var/run/docker.sock"
+  targets = discovery.relabel.docker_logs.output
+  forward_to = [loki.write.local.receiver]
+}
+
+// ---- Send logs to local Loki ----
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

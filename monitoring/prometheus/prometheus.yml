@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Traefik metrics
+  - job_name: "traefik"
+    static_configs:
+      - targets: ["traefik:8080"]
+
+  # Alloy internal metrics (includes node_exporter + cAdvisor)
+  - job_name: "alloy"
+    static_configs:
+      - targets: ["alloy:12345"]

@@ -1,0 +1,17 @@
+---
+# Authelia user database
+# Generate a password hash: make authelia-password
+#
+# Example output:
+#   $argon2id$v=19$m=65536,t=3,p=4$abc123.../def456...
+#
+# Paste the full hash below.
+
+users:
+  admin:
+    disabled: false
+    displayname: "Admin User"
+    email: "admin@example.com"
+    password: "$argon2id$v=19$m=65536,t=3,p=4$GENERATE_WITH_make_authelia-password"
+    groups:
+      - admins

@@ -1,0 +1,545 @@
+networks:
+  web:
+    name: web
+  database:
+    name: database
+  monitoring:
+    name: monitoring
+
+volumes:
+  traefik-certs:
+  mariadb-data:
+  postgres-data:
+  redis-data:
+  wordpress1-data:
+  wordpress2-data:
+  grafana-data:
+  prometheus-data:
+  loki-data:
+  graphite-data:
+  uptime-kuma-data:
+  ntfy-cache:
+  n8n-data:
+  app-data:
+
+services:
+  # ===========================================
+  # Traefik - Reverse Proxy & SSL Termination
+  # ===========================================
+  traefik:
+    image: traefik:v3.6
+    container_name: traefik
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/config:/etc/traefik/config:ro
+      - traefik-certs:/certs
+      - /var/log/traefik:/var/log/traefik
+    networks:
+      - web
+      - monitoring
+    environment:
+      - TZ=${TZ:-Europe/Stockholm}
+    labels:
+      # Dashboard
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik-dashboard.rule=Host(`traefik.${DOMAIN}`)"
+      - "traefik.http.routers.traefik-dashboard.entrypoints=websecure"
+      - "traefik.http.routers.traefik-dashboard.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.traefik-dashboard.service=api@internal"
+      - "traefik.http.routers.traefik-dashboard.middlewares=authelia@docker"
+
+  # ===========================================
+  # Authelia - Authentication & 2FA
+  # ===========================================
+  authelia:
+    image: authelia/authelia:4
+    container_name: authelia
+    restart: unless-stopped
+    volumes:
+      - ./authelia/config:/config
+      - ./authelia/secrets:/secrets:ro
+    networks:
+      - web
+    environment:
+      TZ: ${TZ:-Europe/Stockholm}
+      X_AUTHELIA_CONFIG_FILTERS: template
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.authelia.rule=Host(`auth.${DOMAIN}`)"
+      - "traefik.http.routers.authelia.entrypoints=websecure"
+      - "traefik.http.routers.authelia.tls.certresolver=letsencrypt"
+      - "traefik.http.services.authelia.loadbalancer.server.port=9091"
+      # ForwardAuth middleware - used by other services
+      - "traefik.http.middlewares.authelia.forwardAuth.address=http://authelia:9091/api/authz/forward-auth"
+      - "traefik.http.middlewares.authelia.forwardAuth.trustForwardHeader=true"
+      - "traefik.http.middlewares.authelia.forwardAuth.authResponseHeaders=Remote-User,Remote-Groups,Remote-Email,Remote-Name"
+
+  # ===========================================
+  # Main Website (Next.js SSR example)
+  # ===========================================
+  # This container is built from source deployed via CI/CD.
+  # See github-actions/deploy-nextjs-app.yml for the workflow.
+  app:
+    build:
+      context: ./sites/blog
+      dockerfile: Dockerfile
+    container_name: app
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+    networks:
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.app.rule=Host(`${DOMAIN}`) || Host(`www.${DOMAIN}`)"
+      - "traefik.http.routers.app.entrypoints=websecure"
+      - "traefik.http.routers.app.tls.certresolver=letsencrypt"
+      - "traefik.http.services.app.loadbalancer.server.port=3000"
+      # Redirect www to non-www
+      - "traefik.http.middlewares.app-www.redirectregex.regex=^https://www\\.${DOMAIN}/(.*)"
+      - "traefik.http.middlewares.app-www.redirectregex.replacement=https://${DOMAIN}/$${1}"
+      - "traefik.http.middlewares.app-www.redirectregex.permanent=true"
+      - "traefik.http.routers.app.middlewares=app-www@docker,security-headers@file,rate-limit@file"
+
+  # ===========================================
+  # Static Site (Nginx)
+  # ===========================================
+  static-site:
+    image: nginx:1.28-alpine
+    container_name: static-site
+    restart: unless-stopped
+    volumes:
+      - ./sites/static-site/html:/usr/share/nginx/html:ro
+      - ./sites/static-site/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.static-site.rule=Host(`${WIKI_DOMAIN}`)"
+      - "traefik.http.routers.static-site.entrypoints=websecure"
+      - "traefik.http.routers.static-site.tls.certresolver=letsencrypt"
+      - "traefik.http.services.static-site.loadbalancer.server.port=80"
+      - "traefik.http.routers.static-site.middlewares=security-headers@file,rate-limit@file"
+
+  # ===========================================
+  # Database Servers
+  # ===========================================
+
+  # Redis - Object Cache for WordPress
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MariaDB - Shared MySQL-compatible database
+  mariadb:
+    image: mariadb:11
+    container_name: mariadb
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD}
+      MARIADB_DATABASE: ${WP1_DB_NAME}
+      MARIADB_USER: ${WP1_DB_USER}
+      MARIADB_PASSWORD: ${WP1_DB_PASSWORD}
+      WP2_DB_NAME: ${WP2_DB_NAME}
+      WP2_DB_USER: ${WP2_DB_USER}
+      WP2_DB_PASSWORD: ${WP2_DB_PASSWORD}
+      UPTIME_KUMA_DB_NAME: ${UPTIME_KUMA_DB_NAME:-uptime_kuma}
+      UPTIME_KUMA_DB_USER: ${UPTIME_KUMA_DB_USER:-uptime_kuma}
+      UPTIME_KUMA_DB_PASSWORD: ${UPTIME_KUMA_DB_PASSWORD}
+      MARIADB_MONITORING_USER: ${MARIADB_MONITORING_USER:-alloy}
+      MARIADB_MONITORING_PASSWORD: ${MARIADB_MONITORING_PASSWORD}
+    volumes:
+      - mariadb-data:/var/lib/mysql
+      - ./scripts/init-wordpress-dbs.sh:/docker-entrypoint-initdb.d/init.sh:ro
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL - Shared PostgreSQL database
+  postgres:
+    image: postgres:17-alpine
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: postgres
+      UMAMI_DB_NAME: ${UMAMI_DB_NAME:-umami}
+      UMAMI_DB_USER: ${UMAMI_DB_USER:-umami}
+      UMAMI_DB_PASSWORD: ${UMAMI_DB_PASSWORD}
+      N8N_DB_NAME: ${N8N_DB_NAME:-n8n}
+      N8N_DB_USER: ${N8N_DB_USER:-n8n}
+      N8N_DB_PASSWORD: ${N8N_DB_PASSWORD}
+      POSTGRES_MONITORING_USER: ${POSTGRES_MONITORING_USER:-alloy}
+      POSTGRES_MONITORING_PASSWORD: ${POSTGRES_MONITORING_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./scripts/init-postgres-dbs.sh:/docker-entrypoint-initdb.d/init.sh:ro
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Adminer - Database Management UI
+  adminer:
+    image: adminer:latest
+    container_name: adminer
+    restart: unless-stopped
+    environment:
+      ADMINER_DEFAULT_SERVER: mariadb
+      ADMINER_DESIGN: dracula
+    networks:
+      - web
+      - database
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.adminer.rule=Host(`db.${DOMAIN}`)"
+      - "traefik.http.routers.adminer.entrypoints=websecure"
+      - "traefik.http.routers.adminer.tls.certresolver=letsencrypt"
+      - "traefik.http.services.adminer.loadbalancer.server.port=8080"
+      - "traefik.http.routers.adminer.middlewares=authelia@docker"
+
+  # ===========================================
+  # WordPress Site 1
+  # ===========================================
+  wordpress1:
+    build: ./wordpress
+    container_name: wordpress1
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      WORDPRESS_DB_HOST: mariadb
+      WORDPRESS_DB_NAME: ${WP1_DB_NAME}
+      WORDPRESS_DB_USER: ${WP1_DB_USER}
+      WORDPRESS_DB_PASSWORD: ${WP1_DB_PASSWORD}
+      WORDPRESS_CONFIG_EXTRA: |
+        define('WP_MEMORY_LIMIT', '256M');
+        define('WP_MAX_MEMORY_LIMIT', '512M');
+        define('WP_REDIS_HOST', 'redis');
+        define('WP_REDIS_PORT', 6379);
+        define('WP_REDIS_DATABASE', 0);
+        define('WP_REDIS_PREFIX', 'wp1_');
+    volumes:
+      - wordpress1-data:/var/www/html
+      - ./sites/wordpress-1/uploads.ini:/usr/local/etc/php/conf.d/uploads.ini:ro
+    networks:
+      - web
+      - database
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.wordpress1.rule=Host(`blog1.example.com`) || Host(`www.blog1.example.com`)"
+      - "traefik.http.routers.wordpress1.entrypoints=websecure"
+      - "traefik.http.routers.wordpress1.tls.certresolver=letsencrypt"
+      - "traefik.http.services.wordpress1.loadbalancer.server.port=80"
+      # Redirect www to non-www
+      - "traefik.http.middlewares.wordpress1-www.redirectregex.regex=^https://www\\.blog1\\.example\\.com/(.*)"
+      - "traefik.http.middlewares.wordpress1-www.redirectregex.replacement=https://blog1.example.com/$${1}"
+      - "traefik.http.middlewares.wordpress1-www.redirectregex.permanent=true"
+      - "traefik.http.routers.wordpress1.middlewares=wordpress1-www@docker,security-headers@file,rate-limit@file"
+
+  # ===========================================
+  # WordPress Site 2
+  # ===========================================
+  wordpress2:
+    build: ./wordpress
+    container_name: wordpress2
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      WORDPRESS_DB_HOST: mariadb
+      WORDPRESS_DB_NAME: ${WP2_DB_NAME}
+      WORDPRESS_DB_USER: ${WP2_DB_USER}
+      WORDPRESS_DB_PASSWORD: ${WP2_DB_PASSWORD}
+      WORDPRESS_CONFIG_EXTRA: |
+        define('WP_MEMORY_LIMIT', '256M');
+        define('WP_MAX_MEMORY_LIMIT', '512M');
+        define('WP_REDIS_HOST', 'redis');
+        define('WP_REDIS_PORT', 6379);
+        define('WP_REDIS_DATABASE', 1);
+        define('WP_REDIS_PREFIX', 'wp2_');
+    volumes:
+      - wordpress2-data:/var/www/html
+      - ./sites/wordpress-2/uploads.ini:/usr/local/etc/php/conf.d/uploads.ini:ro
+    networks:
+      - web
+      - database
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.wordpress2.rule=Host(`blog2.example.com`) || Host(`www.blog2.example.com`)"
+      - "traefik.http.routers.wordpress2.entrypoints=websecure"
+      - "traefik.http.routers.wordpress2.tls.certresolver=letsencrypt"
+      - "traefik.http.services.wordpress2.loadbalancer.server.port=80"
+      # Redirect www to non-www
+      - "traefik.http.middlewares.wordpress2-www.redirectregex.regex=^https://www\\.blog2\\.example\\.com/(.*)"
+      - "traefik.http.middlewares.wordpress2-www.redirectregex.replacement=https://blog2.example.com/$${1}"
+      - "traefik.http.middlewares.wordpress2-www.redirectregex.permanent=true"
+      - "traefik.http.routers.wordpress2.middlewares=wordpress2-www@docker,security-headers@file,rate-limit@file"
+
+  # ===========================================
+  # Umami - Privacy-Focused Web Analytics
+  # ===========================================
+  umami:
+    image: ghcr.io/umami-software/umami:postgresql-latest
+    container_name: umami
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${UMAMI_DB_USER:-umami}:${UMAMI_DB_PASSWORD}@postgres:5432/${UMAMI_DB_NAME:-umami}
+      APP_SECRET: ${UMAMI_APP_SECRET}
+    networks:
+      - web
+      - database
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.umami.rule=Host(`analytics.${DOMAIN}`)"
+      - "traefik.http.routers.umami.entrypoints=websecure"
+      - "traefik.http.routers.umami.tls.certresolver=letsencrypt"
+      - "traefik.http.services.umami.loadbalancer.server.port=3000"
+      - "traefik.http.routers.umami.middlewares=rate-limit@file"
+
+  # ===========================================
+  # Monitoring Stack
+  # ===========================================
+
+  # Grafana - Dashboards & Visualization
+  grafana:
+    image: grafana/grafana:11.6
+    container_name: grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_SERVER_ROOT_URL: https://stats.${DOMAIN}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/server-overview.json
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - web
+      - monitoring
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.grafana.rule=Host(`stats.${DOMAIN}`)"
+      - "traefik.http.routers.grafana.entrypoints=websecure"
+      - "traefik.http.routers.grafana.tls.certresolver=letsencrypt"
+      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+      - "traefik.http.routers.grafana.middlewares=authelia@docker"
+
+  # Prometheus - Metrics Storage
+  prometheus:
+    image: prom/prometheus:v3
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-remote-write-receiver"
+      - "--web.console.libraries=/etc/prometheus/console_libraries"
+      - "--web.console.templates=/etc/prometheus/consoles"
+    volumes:
+      - prometheus-data:/prometheus
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks:
+      - monitoring
+
+  # Loki - Log Aggregation
+  loki:
+    image: grafana/loki:3.6
+    container_name: loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/config.yml
+    volumes:
+      - loki-data:/loki
+      - ./monitoring/loki-config.yml:/etc/loki/config.yml:ro
+    networks:
+      - monitoring
+
+  # Alloy - Metrics & Log Collector (replaces node_exporter + cAdvisor + Promtail)
+  alloy:
+    image: grafana/alloy:latest
+    container_name: alloy
+    restart: unless-stopped
+    command: run /etc/alloy/config.alloy
+    environment:
+      MARIADB_MONITORING_DSN: "${MARIADB_MONITORING_USER:-alloy}:${MARIADB_MONITORING_PASSWORD}@(mariadb:3306)/"
+      POSTGRES_MONITORING_DSN: "postgresql://${POSTGRES_MONITORING_USER:-alloy}:${POSTGRES_MONITORING_PASSWORD}@postgres:5432/postgres?sslmode=disable"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+      - /var/lib/docker:/var/lib/docker:ro
+    networks:
+      - monitoring
+      - database
+    pid: host
+
+  # ===========================================
+  # Watchtower - Automatic Docker Image Updates
+  # ===========================================
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: watchtower
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Europe/Stockholm}
+      DOCKER_API_VERSION: "1.40"
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_SCHEDULE: "0 0 4 * * *"
+      WATCHTOWER_NOTIFICATION_URL: "generic+https://notify.${DOMAIN}/watchtower?title=Watchtower"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  # ===========================================
+  # Uptime Kuma - Uptime Monitoring & Status Pages
+  # ===========================================
+  uptime-kuma:
+    image: louislam/uptime-kuma:2
+    container_name: uptime-kuma
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    environment:
+      UPTIME_KUMA_DB_TYPE: mariadb
+      UPTIME_KUMA_DB_HOSTNAME: mariadb
+      UPTIME_KUMA_DB_PORT: 3306
+      UPTIME_KUMA_DB_NAME: ${UPTIME_KUMA_DB_NAME:-uptime_kuma}
+      UPTIME_KUMA_DB_USERNAME: ${UPTIME_KUMA_DB_USER:-uptime_kuma}
+      UPTIME_KUMA_DB_PASSWORD: ${UPTIME_KUMA_DB_PASSWORD}
+    volumes:
+      - uptime-kuma-data:/app/data
+    networks:
+      - web
+      - monitoring
+      - database
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.uptime-kuma.rule=Host(`status.${DOMAIN}`)"
+      - "traefik.http.routers.uptime-kuma.entrypoints=websecure"
+      - "traefik.http.routers.uptime-kuma.tls.certresolver=letsencrypt"
+      - "traefik.http.services.uptime-kuma.loadbalancer.server.port=3001"
+      - "traefik.http.routers.uptime-kuma.middlewares=rate-limit@file"
+
+  # ===========================================
+  # Ntfy - Push Notification Service
+  # ===========================================
+  ntfy:
+    image: binwiederhier/ntfy:latest
+    container_name: ntfy
+    restart: unless-stopped
+    command: serve
+    volumes:
+      - ntfy-cache:/var/cache/ntfy
+      - ./ntfy/server.yml:/etc/ntfy/server.yml:ro
+    networks:
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.ntfy.rule=Host(`notify.${DOMAIN}`)"
+      - "traefik.http.routers.ntfy.entrypoints=websecure"
+      - "traefik.http.routers.ntfy.tls.certresolver=letsencrypt"
+      - "traefik.http.services.ntfy.loadbalancer.server.port=80"
+
+  # ===========================================
+  # n8n - Workflow Automation
+  # ===========================================
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${N8N_DB_NAME:-n8n}
+      DB_POSTGRESDB_USER: ${N8N_DB_USER:-n8n}
+      DB_POSTGRESDB_PASSWORD: ${N8N_DB_PASSWORD}
+      N8N_HOST: auto.${DOMAIN}
+      N8N_PROTOCOL: https
+      WEBHOOK_URL: https://auto.${DOMAIN}/
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
+      TZ: ${TZ:-Europe/Stockholm}
+    volumes:
+      - n8n-data:/home/node/.n8n
+    networks:
+      - web
+      - database
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.n8n.rule=Host(`auto.${DOMAIN}`)"
+      - "traefik.http.routers.n8n.entrypoints=websecure"
+      - "traefik.http.routers.n8n.tls.certresolver=letsencrypt"
+      - "traefik.http.services.n8n.loadbalancer.server.port=5678"
+      - "traefik.http.routers.n8n.middlewares=authelia@docker"
+
+  # ===========================================
+  # Homepage - Service Dashboard
+  # ===========================================
+  homepage:
+    image: ghcr.io/gethomepage/homepage:latest
+    container_name: homepage
+    restart: unless-stopped
+    environment:
+      HOMEPAGE_ALLOWED_HOSTS: home.${DOMAIN}
+      HOMEPAGE_VAR_GRAFANA_USER: ${GRAFANA_ADMIN_USER:-admin}
+      HOMEPAGE_VAR_GRAFANA_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - web
+      - monitoring
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.homepage.rule=Host(`home.${DOMAIN}`)"
+      - "traefik.http.routers.homepage.entrypoints=websecure"
+      - "traefik.http.routers.homepage.tls.certresolver=letsencrypt"
+      - "traefik.http.services.homepage.loadbalancer.server.port=3000"
+      - "traefik.http.routers.homepage.middlewares=authelia@docker"
